@@ -17,9 +17,9 @@ those platforms to be called proven.
 - [X] Typed, checked access to the guest's exported symbols
 - [X] Host-owned state that survives reloads
 - [X] `build.zig` helper, opt-in file watcher, guest-side helpers, example
-- [ ] No crash protection / rollback — a bad guest crashes the process
-- [ ] No automatic `.state` / `.bss` section transfer (host owns the state instead)
-- [ ] No hot-reload of the host itself
+- [ ] Crash protection / rollback — a bad guest crashes the process
+- [ ] Automatic `.state` / `.bss` section transfer (host owns the state instead)
+- [ ] Hot-reload of the host itself
 
 ## Install
 

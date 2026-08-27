@@ -22,7 +22,7 @@ pub fn iterate(state: *State) !bool {
     state.tick += 1;
 
     // ↓↓↓ EDIT THIS LINE while `zig build run` is going ↓↓↓
-    std.log.scoped(.guest).info("tick {d}: hello from the unwelcome guest", .{state.tick});
+    std.log.scoped(.guest).info("tick {d}: hello from the guest", .{state.tick});
     // ↑↑↑ then run `zig build` — the message changes live ↑↑↑
 
     return true; // return false to ask the host to quit; Ctrl+C also works

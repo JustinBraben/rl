@@ -41,6 +41,21 @@ pub fn build(b: *std.Build) void {
     const mod_tests = b.addTest(.{ .root_module = mod });
     const run_mod_tests = b.addRunArtifact(mod_tests);
 
+    // A silent guest library, built just for the integration test so a green
+    // `zig build test` emits no child stderr (see test/fixture_guest.zig).
+    const fixture_guest_mod = b.createModule(.{
+        .root_source_file = b.path("test/fixture_guest.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = link_libc,
+    });
+    fixture_guest_mod.addImport("rl", mod);
+    const fixture_guest = b.addLibrary(.{
+        .linkage = .dynamic,
+        .name = "rl_fixture_guest",
+        .root_module = fixture_guest_mod,
+    });
+
     const it_mod = b.createModule(.{
         .root_source_file = b.path("test/integration.zig"),
         .target = target,
@@ -49,17 +64,13 @@ pub fn build(b: *std.Build) void {
     });
     it_mod.addImport("rl", mod);
     const it_opts = b.addOptions();
-    it_opts.addOption(
-        []const u8,
-        "guest_lib_path",
-        b.getInstallPath(.bin, HotReload.libFileName(b, target, "example_guest")),
-    );
+    // A LazyPath, so the test step waits for the fixture lib and gets its
+    // absolute path with no install-step coupling.
+    it_opts.addOptionPath("guest_lib_path", fixture_guest.getEmittedBin());
     it_mod.addOptions("build_options", it_opts);
 
     const it_tests = b.addTest(.{ .root_module = it_mod });
     const run_it_tests = b.addRunArtifact(it_tests);
-    // The integration test loads the installed guest library.
-    run_it_tests.step.dependOn(example.guest_install);
 
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_mod_tests.step);
