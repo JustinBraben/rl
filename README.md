@@ -8,8 +8,8 @@ guest's *code* whenever you rebuild it, and keeps the guest's *state* alive
 across swaps because the host owns it. Edit, `zig build`, watch your running
 program change — no restart.
 
-Tested on Windows; the Linux/macOS paths are implemented but need a run on
-those platforms to be called proven.
+Tested on Windows (reload, watcher, and crash-catch / rollback all exercised).
+The Linux/macOS paths are implemented but not yet run on those platforms.
 
 ## Features
 
@@ -17,7 +17,9 @@ those platforms to be called proven.
 - [X] Typed, checked access to the guest's exported symbols
 - [X] Host-owned state that survives reloads
 - [X] `build.zig` helper, opt-in file watcher, guest-side helpers, example
-- [ ] Crash protection / rollback — a bad guest crashes the process
+- [X] **Opt-in crash protection & rollback** — catch a guest fault, roll its
+  code back to the last good version, keep running
+  ([details](#crash-handling--rollback)); not implemented for Emscripten/web
 - [ ] Automatic `.state` / `.bss` section transfer (host owns the state instead)
 - [ ] Hot-reload of the host itself
 
@@ -49,7 +51,9 @@ b.step("run", "Run").dependOn(&run.step);
 The helper builds the host executable and the guest dynamic library with
 matching settings and installs both into `bin` side-by-side. On Linux/macOS it
 sets `link_libc` on both so `std.DynLib` resolves to the real `dlopen`
-(`DlDynLib`), not the no-libc `ElfDynLib`.
+(`DlDynLib`), not the no-libc `ElfDynLib`. Pass `.crash_handling = true` if the
+host uses `Reloader(Api, .{ .crash_handling = true })` (see
+[Crash handling & rollback](#crash-handling--rollback)).
 
 ## Use
 
@@ -106,7 +110,8 @@ pub fn main() !void {
     const guest_path = try std.fs.path.join(gpa, &.{ exe_dir, rl.libName("game") });
     defer gpa.free(guest_path);
 
-    var reloader = try rl.Reloader(Api).init(gpa, io, .{ .source_path = guest_path });
+    // `.{}` = no crash handling; see "Crash handling & rollback" below.
+    var reloader = try rl.Reloader(Api, .{}).init(gpa, io, .{ .source_path = guest_path });
     defer reloader.deinit();
     try reloader.load();
 
@@ -137,11 +142,15 @@ pub fn main() !void {
 
 | Symbol | Purpose |
 | --- | --- |
-| `rl.Reloader(Api)` | Generic reloader. `Api` is a struct type whose pub decls name the guest's symbols and give each a fn type. `.Module` is the generated typed view. |
-| `Reloader(Api).init/deinit/load/reload/get` | `load` first-loads; `reload(hooks)` copies the newest build into the free slot, opens it, unloads the old one — on failure the current module is untouched and the error is returned. `get()` returns the typed fn pointers (valid until the next `reload`). |
-| `Reloader(Api).ReloadHooks` | Optional `before_unload` / `after_load` callbacks + `userdata`, run inside `reload()`. |
-| `rl.State` | Sugar: `alloc(gpa, size, align)` a zeroed, stably-addressed buffer for the guest's state; `free(gpa)`. |
+| `rl.Reloader(Api, Config)` | Generic reloader. `Api` is a struct type whose pub decls name the guest's symbols and give each a fn type. `Config{ .crash_handling = false, .rollback_depth = 1 }`. `.Module` is the generated typed view. |
+| `Reloader(...).init/deinit/load/reload/get` | `load` first-loads; `reload(hooks)` copies the newest build into a free slot and opens it (the old module is unloaded, or kept for rollback when `crash_handling`). `get()` returns the typed fn pointers (valid until the next `reload`/`rollback`). |
+| `Reloader(...).call(name, args)` | Invoke guest export `name`. With `crash_handling` it is fault-guarded: a caught crash returns `error.GuestCrashed` and sets `.failure`/`.last_crash`. Without it, a plain direct call. |
+| `Reloader(...).rollback()` | After a caught crash, discard the broken module and make the previous version current. `error.RollbackExhausted` when there is nothing to fall back to. |
+| `Reloader(...).failure` / `.last_crash` / `.version` | `rl.Failure` (`none`/`crash`/`initial_failure`/`rollback_exhausted`), `rl.CrashCode` (`segfault`/`illegal`/…), load counter. |
+| `Reloader(...).ReloadHooks` | Optional `before_unload` / `after_load` callbacks + `userdata`, run inside `reload()`. |
+| `rl.State` | Sugar: `alloc(gpa, size, align)` a zeroed, stably-addressed buffer; `free(gpa)`. `enableBackup(gpa)` + `commit()` / `restore()` for crash-rollback checkpoints. |
 | `rl.Watcher` | Opt-in background mtime poller. `start(gpa, .{ .path, .poll_interval_ms })`, `pending()` (one-shot test-and-clear), `stop()`. |
+| `rl.guard.supported` | Comptime bool: whether crash handling is implemented for the target. |
 | `rl.libName("game")` | `"game.dll"` / `"libgame.so"` / `"libgame.dylib"` (comptime). |
 | `rl.guest.exportGameApi(@This(), .{})` | Generates + `@export`s C-ABI wrappers for a game-shaped guest. |
 | `rl.guest.logError` / `noopReloaded` | Standalone guest helpers. |
@@ -149,19 +158,83 @@ pub fn main() !void {
 
 ## How the swap stays safe
 
-`reload()` never touches the file `zig build` writes. It copies that file to
-one of two alternating side names (`game.rl0.dll` / `game.rl1.dll`) and loads
-*that*, so the build output is never locked (Windows) or served from a stale
-mapping (Linux/macOS), and the slot being overwritten is never the one
-currently loaded. `deinit` deletes the side copies; `init` also clears stale
-ones from a crashed prior run.
+`reload()` never touches the file `zig build` writes. It copies that file to a
+rotating side name (`game.rl0.dll`, `game.rl1.dll`, …) and loads *that*, so the
+build output is never locked (Windows) or served from a stale mapping
+(Linux/macOS), and the slot being overwritten is never one that is currently
+loaded. Two slots without crash handling; `rollback_depth + 2` with it (the
+extra slots hold the previous versions kept for rollback). `deinit` deletes the
+side copies; `init` also clears stale ones from a crashed prior run.
+
+## Crash handling & rollback
+
+Opt in per reloader:
+
+```zig
+const Host = rl.Reloader(Api, .{ .crash_handling = true }); // rollback_depth defaults to 1
+```
+
+Then call guest functions through `reloader.call(...)` instead of
+`reloader.get().*(...)`, keep a state checkpoint, and handle
+`error.GuestCrashed`:
+
+```zig
+var state = try rl.State.alloc(gpa, m.state_size(), m.state_align());
+try state.enableBackup(gpa);
+if (!try reloader.call("init", .{state.ptr})) return error.GuestInitFailed;
+state.commit();
+
+while (true) {
+    const keep = reloader.call("iterate", .{state.ptr}) catch |err| switch (err) {
+        error.GuestCrashed => {
+            std.log.warn("guest crashed ({s}); rolling back", .{@tagName(reloader.last_crash)});
+            state.restore();
+            reloader.rollback() catch return error.GuestCrashed; // nothing to roll back to
+            _ = reloader.call("reloaded", .{state.ptr}) catch {};
+            continue;
+        },
+    };
+    if (!keep) break;
+    state.commit();
+    // ... reload on watcher.pending() as usual, via reloader.call ...
+}
+```
+
+How it works:
+
+- **POSIX**: `sigaction` for SIGSEGV/SIGBUS/SIGILL/SIGFPE/SIGABRT plus libc
+  `sigsetjmp`/`siglongjmp`. The host must `link_libc` (the build helper's
+  `.crash_handling = true` does this).
+- **Windows**: a Vectored Exception Handler rewrites the faulting thread's
+  `CONTEXT` back to a point captured with `RtlCaptureContext` before the call.
+- Non-guest crashes still reach Zig's own segfault handler (POSIX chains to
+  the previously-installed action; the Windows VEH returns
+  `EXCEPTION_CONTINUE_SEARCH` when no guarded call is active).
+
+Limits (same spirit as `cr.h`):
+
+- **One guarded call at a time, from one thread.** There is a single global
+  jump target.
+- **First-version crash is fatal.** If the very first loaded guest crashes
+  there is nothing to roll back to: `failure` becomes `.initial_failure`,
+  `rollback()` returns `error.RollbackExhausted`.
+- **State may be inconsistent** if the guest faulted mid-write — hence the
+  opt-in `State` checkpoint. A guest that crashes while holding an OS resource
+  (mutex, handle) still leaks it.
+- **Windows stack-overflow recovery is best-effort** (the guard page is not
+  restored).
+- **Not implemented for Emscripten/web** — `crash_handling = true` on that
+  target is a `@compileError`.
+
+Supported targets: Windows, Linux, macOS (any arch). Elsewhere
+`rl.guard.supported` is `false`.
 
 ## Constraints
 
 - **State layout is fixed at runtime.** Only the guest's code is swapped.
   Adding, removing, or reordering `State` fields needs a full restart.
-- **Don't cache guest function pointers across a reload** except through
-  `reloader.get()`. Same caveat as `cr`.
+- **Don't cache guest function pointers across a reload/rollback** — re-fetch
+  via `reloader.get()` / `reloader.call()` each frame. Same caveat as `cr`.
 - **Shared dependencies must be one instance.** If host and guest both use,
   say, SDL, link it dynamically into both (`shared_libraries` on the helper)
   so they share one runtime and one event queue — never two static copies.
@@ -186,9 +259,14 @@ target.
 ## Develop
 
 ```sh
-zig build test    # unit tests + an integration test that loads the example guest
+zig build test    # unit + integration tests (incl. crash-catch / rollback)
 zig build run     # the example: prints a tick; edit example/guest.zig and `zig build`
 ```
+
+The example host opts into `crash_handling`. Set `crash_at` in
+`example/guest.zig` to a tick number and `zig build` while it runs: the
+reloaded code faults there, the host catches it, rolls back to the previous
+build, and keeps going. Set it back to `null` and `zig build` to recover.
 
 ## License
 

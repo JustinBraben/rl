@@ -10,7 +10,17 @@
 const reload = @import("reload.zig");
 
 /// Host: build a reloader for a guest described by an `Api` struct type.
+/// `Reloader(Api, Config)` — pass `.{}` for the default (no crash handling).
 pub const Reloader = reload.Reloader;
+/// Comptime knobs for `Reloader` (crash handling, rollback depth).
+pub const Config = reload.Config;
+/// Failed-state reason on a `Reloader`.
+pub const Failure = reload.Failure;
+/// Kind of fault from the last caught crash.
+pub const CrashCode = reload.CrashCode;
+/// Low-level fault guard (used internally by `Reloader`; exposed for
+/// advanced use and target-capability checks via `rl.guard.supported`).
+pub const guard = reload.guard;
 /// Host: optional sugar for the host-owned state buffer.
 pub const State = reload.State;
 /// Platform shared-library affixes and name helper.

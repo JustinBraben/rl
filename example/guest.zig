@@ -18,8 +18,18 @@ pub fn init(state: *State) !void {
     std.log.scoped(.guest).info("init", .{});
 }
 
+/// Set to a tick number and `zig build` while the host runs: the reloaded
+/// code faults there, the host catches it, rolls back to this build, and
+/// keeps going. Set back to `null` and `zig build` to recover fully.
+const crash_at: ?u64 = null;
+
 pub fn iterate(state: *State) !bool {
     state.tick += 1;
+
+    if (crash_at) |n| if (state.tick == n) {
+        const p: *allowzero volatile u8 = @ptrFromInt(0);
+        p.* = 1; // boom
+    };
 
     // ↓↓↓ EDIT THIS LINE while `zig build run` is going ↓↓↓
     std.log.scoped(.guest).info("tick {d}: hello from the guest", .{state.tick});

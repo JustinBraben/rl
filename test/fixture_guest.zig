@@ -29,6 +29,12 @@ pub fn reloaded(s: *State) void {
     _ = s;
 }
 
+/// Deliberately faults, for the crash-handling tests.
+pub export fn rl_fixture_boom(_: *anyopaque) callconv(.c) void {
+    const p: *allowzero volatile u8 = @ptrFromInt(0);
+    p.* = 1;
+}
+
 comptime {
     rl.guest.exportGameApi(@This(), .{});
 }

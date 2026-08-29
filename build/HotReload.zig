@@ -46,6 +46,10 @@ pub const AddOptions = struct {
     host_link_libc: ?bool = null,
     /// Extra options applied to the guest module only.
     guest_link_libc: ?bool = null,
+    /// The host uses `rl`'s crash guard (`Reloader(Api, .{ .crash_handling = true })`).
+    /// Forces `link_libc` on the host so the POSIX `sigsetjmp`/`siglongjmp`
+    /// symbols resolve; harmless on Windows.
+    crash_handling: bool = false,
 };
 
 pub const Result = struct {
@@ -98,7 +102,7 @@ pub fn add(b: *std.Build, opts: AddOptions) Result {
         .root_source_file = opts.host_root,
         .target = opts.target,
         .optimize = opts.optimize,
-        .link_libc = opts.host_link_libc orelse libc_default,
+        .link_libc = opts.host_link_libc orelse (libc_default or opts.crash_handling),
     });
     host_mod.addImport("rl", opts.rl_module);
     for (opts.shared_imports) |imp| host_mod.addImport(imp.name, imp.module);

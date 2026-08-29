@@ -22,6 +22,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .rl_module = mod,
+        .crash_handling = true,
     });
 
     const run_example = b.addRunArtifact(example.host);
@@ -60,7 +61,9 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("test/integration.zig"),
         .target = target,
         .optimize = optimize,
-        .link_libc = link_libc,
+        // Always link libc: the crash-handling tests need the POSIX
+        // sigsetjmp/siglongjmp symbols on Linux/macOS.
+        .link_libc = true,
     });
     it_mod.addImport("rl", mod);
     const it_opts = b.addOptions();
