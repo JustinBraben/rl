@@ -224,7 +224,7 @@ const Posix = struct {
 
         var ss: posix.stack_t = .{
             .sp = alt_stack.ptr,
-            .size = alt_stack.len,
+            .size = @intCast(alt_stack.len),
             .flags = 0,
         };
         posix.sigaltstack(&ss, null) catch {};
